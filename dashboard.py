@@ -4,6 +4,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import numpy as np
+import base64
+import io
 
 # Page configuration
 st.set_page_config(
@@ -51,6 +53,14 @@ st.markdown("""
     .status-good { color: #34a853; }
     .status-warning { color: #fbbc04; }
     .status-error { color: #ea4335; }
+    .upload-section {
+        border: 2px dashed #4285f4;
+        border-radius: 10px;
+        padding: 2rem;
+        text-align: center;
+        margin: 1rem 0;
+        background-color: #f8f9fa;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -100,37 +110,71 @@ def calculate_arcade_points(skill_badges, game_arcade, game_trivia, special_game
         }
     }
 
-@st.cache_data
-def load_data():
-    """Load and process the CSV data"""
+def load_data_from_upload(uploaded_file):
+    """Load data from uploaded file"""
     try:
-        # Replace with actual path
-        df = pd.read_csv('GCAF25-ID-WQ9-NCL.csv')
-        
-        # Remove sensitive columns
-        sensitive_cols = ['Email Peserta', 'Nomor HP Peserta']
-        df_safe = df.drop(columns=[col for col in sensitive_cols if col in df.columns])
-        
-        # Calculate arcade points for each participant
-        arcade_data = []
-        for _, row in df_safe.iterrows():
-            skill_badges = row['# Jumlah Skill Badge yang Diselesaikan'] or 0
-            game_arcade = row['# Jumlah Game Arcade yang Diselesaikan'] or 0
-            game_trivia = row['# Jumlah Game Trivia yang Diselesaikan'] or 0
+        if uploaded_file is not None:
+            # Read CSV file
+            df = pd.read_csv(uploaded_file)
             
-            points_data = calculate_arcade_points(skill_badges, game_arcade, game_trivia)
-            arcade_data.append(points_data)
-        
-        # Add arcade points data to dataframe
-        df_safe['Arcade Points'] = [data['total_points'] for data in arcade_data]
-        df_safe['Milestone Achieved'] = [data['milestone_achieved'] for data in arcade_data]
-        df_safe['Milestone Bonus'] = [data['milestone_bonus'] for data in arcade_data]
-        
-        return df_safe, arcade_data
-    except FileNotFoundError:
-        # Sample data for demo
-        return generate_sample_data()
+            # Remove sensitive columns
+            sensitive_cols = ['Email Peserta', 'Nomor HP Peserta']
+            df_safe = df.drop(columns=[col for col in sensitive_cols if col in df.columns])
+            
+            return process_dataframe(df_safe)
+        else:
+            return None, None
+    except Exception as e:
+        st.error(f"Error loading file: {str(e)}")
+        return None, None
 
+def load_data_from_session_state():
+    """Load data from session state (embedded data)"""
+    if 'embedded_data' in st.session_state:
+        try:
+            # Decode base64 data
+            csv_data = base64.b64decode(st.session_state.embedded_data).decode('utf-8')
+            df = pd.read_csv(io.StringIO(csv_data))
+            
+            # Remove sensitive columns
+            sensitive_cols = ['Email Peserta', 'Nomor HP Peserta']
+            df_safe = df.drop(columns=[col for col in sensitive_cols if col in df.columns])
+            
+            return process_dataframe(df_safe)
+        except Exception as e:
+            st.error(f"Error loading embedded data: {str(e)}")
+            return None, None
+    return None, None
+
+def process_dataframe(df_safe):
+    """Process dataframe and calculate arcade points"""
+    # Fill NaN values with 0 for numeric columns
+    numeric_cols = ['# Jumlah Skill Badge yang Diselesaikan', 
+                   '# Jumlah Game Arcade yang Diselesaikan', 
+                   '# Jumlah Game Trivia yang Diselesaikan']
+    
+    for col in numeric_cols:
+        if col in df_safe.columns:
+            df_safe[col] = df_safe[col].fillna(0)
+    
+    # Calculate arcade points for each participant
+    arcade_data = []
+    for _, row in df_safe.iterrows():
+        skill_badges = int(row.get('# Jumlah Skill Badge yang Diselesaikan', 0))
+        game_arcade = int(row.get('# Jumlah Game Arcade yang Diselesaikan', 0))
+        game_trivia = int(row.get('# Jumlah Game Trivia yang Diselesaikan', 0))
+        
+        points_data = calculate_arcade_points(skill_badges, game_arcade, game_trivia)
+        arcade_data.append(points_data)
+    
+    # Add arcade points data to dataframe
+    df_safe['Arcade Points'] = [data['total_points'] for data in arcade_data]
+    df_safe['Milestone Achieved'] = [data['milestone_achieved'] for data in arcade_data]
+    df_safe['Milestone Bonus'] = [data['milestone_bonus'] for data in arcade_data]
+    
+    return df_safe, arcade_data
+
+@st.cache_data
 def generate_sample_data():
     """Generate sample data for demonstration"""
     np.random.seed(42)
@@ -147,22 +191,56 @@ def generate_sample_data():
     }
     
     df = pd.DataFrame(data)
+    return process_dataframe(df)
+
+def embed_csv_data():
+    """Function to embed CSV data using Streamlit interface"""
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("💾 Embed CSV Data")
     
-    # Calculate arcade points
-    arcade_data = []
-    for _, row in df.iterrows():
-        skill_badges = row['# Jumlah Skill Badge yang Diselesaikan']
-        game_arcade = row['# Jumlah Game Arcade yang Diselesaikan']
-        game_trivia = row['# Jumlah Game Trivia yang Diselesaikan']
+    # Option 1: Upload CSV file to embed
+    uploaded_file = st.sidebar.file_uploader(
+        "Upload CSV to embed in session:",
+        type=['csv'],
+        help="Upload your CSV file to embed it in the session state"
+    )
+    
+    if uploaded_file is not None:
+        if st.sidebar.button("Embed This CSV"):
+            # Read and encode CSV data
+            csv_content = uploaded_file.read()
+            encoded_data = base64.b64encode(csv_content).decode('utf-8')
+            
+            # Store in session state
+            st.session_state.embedded_data = encoded_data
+            st.sidebar.success("✅ CSV data embedded successfully!")
+            st.rerun()
+    
+    # Option 2: Paste CSV data directly
+    with st.sidebar.expander("📝 Or paste CSV data"):
+        csv_text = st.text_area(
+            "Paste your CSV data here:",
+            height=200,
+            help="Copy and paste your CSV data directly"
+        )
         
-        points_data = calculate_arcade_points(skill_badges, game_arcade, game_trivia)
-        arcade_data.append(points_data)
+        if csv_text and st.button("Embed Pasted CSV"):
+            # Encode pasted CSV data
+            encoded_data = base64.b64encode(csv_text.encode('utf-8')).decode('utf-8')
+            
+            # Store in session state
+            st.session_state.embedded_data = encoded_data
+            st.sidebar.success("✅ CSV data embedded successfully!")
+            st.rerun()
     
-    df['Arcade Points'] = [data['total_points'] for data in arcade_data]
-    df['Milestone Achieved'] = [data['milestone_achieved'] for data in arcade_data]
-    df['Milestone Bonus'] = [data['milestone_bonus'] for data in arcade_data]
-    
-    return df, arcade_data
+    # Show current embedded data status
+    if 'embedded_data' in st.session_state:
+        st.sidebar.info("📊 Embedded data is available")
+        if st.sidebar.button("🗑️ Clear Embedded Data"):
+            del st.session_state.embedded_data
+            st.rerun()
+
+
 
 def create_overview_metrics(df):
     """Create overview metrics"""
@@ -252,7 +330,6 @@ def create_progress_charts(df):
     
     with col1:
         # Simplified Skill Badge Distribution
-        # Group badges into ranges for easier understanding
         def badge_category(count):
             if count == 0:
                 return "0 Badges (Belum Mulai)"
@@ -459,21 +536,40 @@ def main():
     </div>
     """, unsafe_allow_html=True)
     
-    # Load data
-    df, arcade_data = load_data()
+    # Add embed CSV functionality to sidebar
+    embed_csv_data()
+    
+    # Load data - prioritize embedded data, then use sample data
+    df = None
+    arcade_data = None
+    
+    # Check if embedded data exists
+    if 'embedded_data' in st.session_state:
+        df, arcade_data = load_data_from_session_state()
+        if df is not None:
+            st.success("✅ Using embedded CSV data")
+    
+    # If no embedded data, use sample data
+    if df is None:
+        df, arcade_data = generate_sample_data()
+        st.info("ℹ️ Using sample data for demonstration. Upload CSV file in sidebar to use your data.")
+        
+    if df is None:
+        st.error("❌ Failed to load data")
+        return
     
     # Sidebar filters
     st.sidebar.header("🎛️ Filter Data")
     
-    # Status filter - handle empty selection
+    # Status filter
     status_options = df['Status Redeem Kode Akses'].unique().tolist()
     status_filter = st.sidebar.multiselect(
         "Filter Status Redeem:",
         options=status_options,
-        default=status_options  # Default to all options
+        default=status_options
     )
     
-    # If no status selected, show all data
+    # Apply filters
     if not status_filter:
         filtered_df = df
         st.sidebar.warning("Tidak ada status yang dipilih. Menampilkan semua data.")
